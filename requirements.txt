@@ -1,0 +1,16 @@
+# Air-Gapped AI Station — Python Dependencies
+# Install offline: pip install --no-index --find-links=/local/packages -r requirements.txt
+#
+# To pre-download for sideloading (on internet-connected machine):
+#   pip download -r requirements.txt -d /local/packages
+
+# Runtime
+requests==2.31.0
+
+# Testing
+pytest==8.1.1
+pytest-cov==5.0.0
+
+# Code quality (optional, for local linting)
+# ruff==0.4.4
+# mypy==1.10.0

@@ -1,0 +1,205 @@
+---
+# deploy-env.yml — Proxmox Host Provisioning Playbook
+# Ansible playbook for initial and recovery deployment of the Air-Gapped AI Station.
+#
+# Requirements:
+#   - Ansible 2.14+ with community.general collection
+#   - Run from an internet-connected machine before air-gapping
+#   - Proxmox host must be accessible over management network
+#
+# Usage:
+#   ansible-playbook -i inventory.ini ansible/deploy-env.yml --ask-become-pass
+#
+# Compliance: NIST 800-53 CM-6, CM-7, SC-12, SC-13 | CIS Level 2 | FIPS 140-3
+
+- name: "Phase 1 — Proxmox Host Hardening"
+  hosts: proxmox_host
+  become: true
+  vars:
+    zfs_arc_max_bytes: 17179869184   # 16 GB in bytes
+    ollama_user: ollama
+    ollama_group: ollama
+    airgap_config_dir: /etc/airgap
+    log_dir: /var/log/airgap
+    key_dir: /etc/zfs/keys
+
+  tasks:
+    # ── FIPS 140-3 Kernel Flag ─────────────────────────────────────────────
+    - name: "FIPS | Enable fips=1 kernel parameter in GRUB"
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet fips=1"'
+        backup: true
+      notify: update-grub
+
+    # ── ZFS ARC Limit ─────────────────────────────────────────────────────
+    - name: "ZFS | Set ARC max to 16 GB via modprobe config"
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/zfs.conf
+        content: "options zfs zfs_arc_max={{ zfs_arc_max_bytes }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "ZFS | Apply ARC limit immediately (live kernel)"
+      ansible.builtin.shell: >
+        echo {{ zfs_arc_max_bytes }} > /sys/module/zfs/parameters/zfs_arc_max
+      changed_when: true
+
+    # ── ZFS Datasets ──────────────────────────────────────────────────────
+    - name: "ZFS | Create key directory"
+      ansible.builtin.file:
+        path: "{{ key_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "ZFS | Create workspace dataset with encryption"
+      ansible.builtin.command:
+        cmd: >
+          zfs create -o encryption=aes-256-gcm -o keylocation=file://{{ key_dir }}/tank_workspace.key
+          -o keyformat=raw -o recordsize=128k -o xattr=sa tank/workspace
+        creates: /tank/workspace
+
+    - name: "ZFS | Create ollama-models dataset with encryption"
+      ansible.builtin.command:
+        cmd: >
+          zfs create -o encryption=aes-256-gcm -o keylocation=file://{{ key_dir }}/tank_ollama-models.key
+          -o keyformat=raw -o recordsize=1M tank/ollama-models
+        creates: /tank/ollama-models
+
+    # ── Directory Setup ───────────────────────────────────────────────────
+    - name: "Dirs | Create airgap config directory"
+      ansible.builtin.file:
+        path: "{{ airgap_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: "Dirs | Create log directory"
+      ansible.builtin.file:
+        path: "{{ log_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: "Dirs | Copy snapshot policy"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../config/policy.yml"
+        dest: "{{ airgap_config_dir }}/policy.yml"
+        owner: root
+        group: root
+        mode: "0640"
+
+    # ── Scripts ───────────────────────────────────────────────────────────
+    - name: "Scripts | Install zfs-key-manager.sh"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/zfs-key-manager.sh"
+        dest: /usr/local/bin/zfs-key-manager.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Scripts | Install zfs-snap-manager.bash"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/zfs-snap-manager.bash"
+        dest: /usr/local/bin/zfs-snap-manager.bash
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Scripts | Install security-audit.bash"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/security-audit.bash"
+        dest: /usr/local/bin/security-audit.bash
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Scripts | Install sneakernet-update.bash"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/sneakernet-update.bash"
+        dest: /usr/local/bin/sneakernet-update.bash
+        owner: root
+        group: root
+        mode: "0755"
+
+    # ── Systemd Units ─────────────────────────────────────────────────────
+    - name: "Systemd | Install zfs-load-keys.service"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../systemd/zfs-load-keys.service"
+        dest: /etc/systemd/system/zfs-load-keys.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: systemd-daemon-reload
+
+    # ── Ollama Service User ────────────────────────────────────────────────
+    - name: "Ollama | Create ollama system user"
+      ansible.builtin.user:
+        name: "{{ ollama_user }}"
+        group: "{{ ollama_group }}"
+        system: true
+        create_home: false
+        shell: /sbin/nologin
+        comment: "Ollama inference engine service account"
+
+    - name: "Ollama | Install ollama-keepalive.service"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../systemd/ollama-keepalive.service"
+        dest: /etc/systemd/system/ollama-keepalive.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: systemd-daemon-reload
+
+    # ── Cron: Daily Snapshot ──────────────────────────────────────────────
+    - name: "Cron | Daily snapshot job"
+      ansible.builtin.cron:
+        name: "ZFS daily snapshot"
+        minute: "0"
+        hour: "2"
+        job: "/usr/local/bin/zfs-snap-manager.bash --policy /etc/airgap/policy.yml >> /var/log/airgap/snapshots.log 2>&1"
+        user: root
+
+    # ── Cron: Daily Security Audit ────────────────────────────────────────
+    - name: "Cron | Daily security audit"
+      ansible.builtin.cron:
+        name: "Daily security audit"
+        minute: "30"
+        hour: "6"
+        job: "/usr/local/bin/security-audit.bash >> /var/log/airgap/security_audit.log 2>&1"
+        user: root
+
+  handlers:
+    - name: update-grub
+      ansible.builtin.command: update-grub
+      listen: update-grub
+
+    - name: systemd-daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+      listen: systemd-daemon-reload
+
+
+- name: "Phase 2 — LXC Python Environment Setup (LXC 101)"
+  hosts: lxc_101
+  become: true
+  vars:
+    workspace_src: /src
+
+  tasks:
+    - name: "Python | Install requirements offline"
+      ansible.builtin.pip:
+        requirements: "{{ workspace_src }}/requirements.txt"
+        extra_args: "--no-index --find-links=/local/packages"
+
+    - name: "Python | Verify smoke test passes"
+      ansible.builtin.command:
+        cmd: python3 {{ workspace_src }}/src/smoke_test_agent.py
+      register: smoke_result
+      failed_when: smoke_result.rc != 0

@@ -1,0 +1,34 @@
+[Unit]
+Description=Ollama Inference Engine (Air-Gapped AI Station)
+Documentation=https://github.com/ollama/ollama
+After=network.target
+# Ensure ZFS datasets are mounted before Ollama starts
+After=zfs.target
+
+[Service]
+# Security hardening — GAP-SEC-04 fix
+# Create the ollama user/group if not present:
+#   useradd --system --no-create-home --shell /sbin/nologin ollama
+User=ollama
+Group=ollama
+
+# Capability restrictions
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/.ollama /var/log/airgap
+
+# Process management
+Type=simple
+ExecStart=/usr/local/bin/ollama serve
+# Pre-load model into RAM after service starts
+ExecStartPost=/bin/bash -c 'sleep 5 && /usr/local/bin/ollama run qwen2.5-coder:32b "" || true'
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

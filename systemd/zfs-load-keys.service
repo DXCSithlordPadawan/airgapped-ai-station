@@ -1,0 +1,16 @@
+[Unit]
+Description=Load ZFS Encryption Keys on Boot
+Documentation=man:zfs(8)
+DefaultDependencies=no
+After=zfs-import.target
+Before=zfs.target
+Before=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/zfs-key-manager.sh load tank/workspace
+ExecStart=/usr/local/bin/zfs-key-manager.sh load tank/ollama-models
+
+[Install]
+WantedBy=zfs.target

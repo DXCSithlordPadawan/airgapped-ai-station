@@ -1,0 +1,23 @@
+# policy.yml — ZFS Snapshot Retention Policy
+# Location: /etc/airgap/policy.yml (Proxmox Host)
+#
+# This file is consumed by scripts/zfs-snap-manager.bash --policy
+# Compliance: NIST 800-53 CP-9 (System Backup)
+---
+datasets:
+  tank/workspace:
+    hourly: 24
+    daily: 7
+    monthly: 1
+    recursive: true
+  tank/ollama-models:
+    hourly: 0
+    daily: 1
+    monthly: 1
+    recursive: false
+
+# Global Settings
+exclude:
+  - tank/temp
+  - tank/cache
+snapshot_prefix: "autosnap_"

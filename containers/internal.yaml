@@ -1,0 +1,15 @@
+# internal.yaml — Rootless Podman Internal Network Definition
+# Location: ~/.config/containers/networks/ai-sandbox.json (inside LXC 101)
+#
+# This network has no gateway and DNS is disabled, ensuring AI-generated
+# code cannot make outbound network calls even within the container.
+#
+# Compliance: NIST 800-53 SC-7 | CIS Level 2
+name: ai-sandbox
+driver: bridge
+network_interface: podman1
+internal: true
+dns_enabled: false
+ipam_options:
+  driver: host-local
+  subnet: 172.16.200.0/24
